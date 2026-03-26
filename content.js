@@ -1,84 +1,98 @@
 // =============================================================================
-// Otiyot+ Content Script
-// Runs on every page. Applies four visual enhancements to Hebrew text:
-//   1. Colour-coding each letter by its nikud (vowel mark)
-//   2. Swapping the page font to the dyslexia-friendly Hebrew typeface
-//   3. Adding extra letter-spacing for easier reading
-//   4. NEW: Reading Focus Mode (Blurring everything except highlighted text)
+// Otiyot+ Content Script (Isolated Hebrew-only logic)
+// =============================================================================
+// MERGED: Partner's advanced rewrite (Shva Na/Nach, highlight modes, SVG focus,
+//         real-time settings) + span padding/border-radius from GitHub version.
 // =============================================================================
 
 (function () {
 
-  // ---------------------------------------------------------------------------
   // 1. MASTER NIKUD COLOUR MAP
-  // ---------------------------------------------------------------------------
+  //
+  // Shva (U+05B0) is one Unicode point but has two phonetic readings:
+  //   Shva Na  (voiced) — acts like a short vowel
+  //   Shva Nach (silent) — no vowel sound
+  // We use synthetic keys 'SHVA_NA' and 'SHVA_NACH' in ACTIVE_VOWEL_HIGHLIGHTS
+  // for colour lookup. classifyShva() resolves which applies at runtime.
+  // U+05B0 itself stays in ALL_NIKUD_SET so the diacritic collector still picks
+  // it up, but it is NOT added to NIKUD_SET (which maps directly to colour keys).
+  //
+  // Holam-Vav (וֹ) and Shuruk (וּ) are Vav-based vowels handled by classifyVav().
+  const SHVA_CHAR = '\u05B0';
+
   const ALL_NIKUD = {
-    '\u05B0': { color: '#3877ff', key: 'nikud_05B0', label: 'Shva'   },
-    '\u05B4': { color: '#7debb0', key: 'nikud_05B4', label: 'Hiriq'  },
-    '\u05B5': { color: '#fd29baff', key: 'nikud_05B5', label: 'Tsere'  },
-    '\u05B6': { color: '#f81b1b', key: 'nikud_05B6', label: 'Segol'  },
-    '\u05B7': { color: '#66fd7a', key: 'nikud_05B7', label: 'Patach' },
-    '\u05B8': { color: '#8d62fa', key: 'nikud_05B8', label: 'Kamatz' },
-    '\u05B9': { color: '#6ee4efff', key: 'nikud_05B9', label: 'Holam'  },
-    '\u05BB': { color: '#1cc00dff', key: 'nikud_05BB', label: 'Kubutz' },
-    '\u05BC': { color: 'rgb(242, 254, 6)', key: 'nikud_05BC', label: 'Dagesh' },
+    'SHVA_NA':   { color: '#cc0000', key: 'nikud_shva_na',   label: 'Shva Na'   }, // deep red
+    'SHVA_NACH': { color: '#ff88aa', key: 'nikud_shva_nach', label: 'Shva Nach' }, // pink
+    '\u05B4':    { color: '#ff9900', key: 'nikud_05B4', label: 'Hiriq'  },
+    '\u05B5':    { color: '#cccc00', key: 'nikud_05B5', label: 'Tsere'  },
+    '\u05B6':    { color: '#00cc00', key: 'nikud_05B6', label: 'Segol'  },
+    '\u05B7':    { color: '#6aa84f', key: 'nikud_05B7', label: 'Patach' },
+    '\u05B8':    { color: '#6fa8dc', key: 'nikud_05B8', label: 'Kamatz' },
+    '\u05B9':    { color: '#0000ff', key: 'nikud_05B9', label: 'Holam'  },
+    '\u05BB':    { color: '#9900ff', key: 'nikud_05BB', label: 'Kubutz' },
+    '\u05BC':    { color: '#ff00ff', key: 'nikud_05BC', label: 'Dagesh' },
   };
 
-  // Hataf vowels share their base nikud's color and toggle state
   const HATAF_MAP = {
-    '\u05B1': '\u05B6', // Hataf Segol  → Segol
-    '\u05B2': '\u05B7', // Hataf Patach → Patach
-    '\u05B3': '\u05B8', // Hataf Kamatz → Kamatz
+    '\u05B1': '\u05B6',
+    '\u05B2': '\u05B7',
+    '\u05B3': '\u05B8',
   };
 
   let ACTIVE_VOWEL_HIGHLIGHTS = {};
   let NIKUD_SET = new Set();
-  const ALL_NIKUD_SET = new Set([...Object.keys(ALL_NIKUD), ...Object.keys(HATAF_MAP)]);
+  const ALL_NIKUD_SET = new Set([
+    ...Object.keys(ALL_NIKUD).filter(k => k.length === 1),
+    SHVA_CHAR,
+    ...Object.keys(HATAF_MAP),
+  ]);
 
-  // ---------------------------------------------------------------------------
   // 2. CHARACTER CLASSIFICATION HELPERS
-  // ---------------------------------------------------------------------------
   function isCantillation(code) { return code >= 0x0591 && code <= 0x05AF; }
   function isHebrewLetter(code) { return code >= 0x05D0 && code <= 0x05EA; }
-  // Shin Dot (U+05C1) and Sin Dot (U+05C2) are letter-modifiers, not nikud.
-  // U+05BF (Rafe) and U+05C4, U+05C5 (upper/lower dots) are also non-vowel marks.
-  // We pass all of these through silently so they don't break diacritic collection.
   function isLetterModifier(code) {
-    return code === 0x05C1 || code === 0x05C2 || // Shin Dot, Sin Dot
-           code === 0x05BF ||                     // Rafe
-           code === 0x05C4 || code === 0x05C5;    // Hebrew Upper/Lower Dot
+    return code === 0x05C1 || code === 0x05C2 ||
+           code === 0x05BF ||
+           code === 0x05C4 || code === 0x05C5;
   }
 
-  // ---------------------------------------------------------------------------
   // 3. SETTINGS
-  // ---------------------------------------------------------------------------
   let settings = {
-    colorNekudot:  true,
-    fontEnabled:   true,
-    letterSpacing: 0,
-    focusMode:     false, // NEW: Default Focus Mode setting
+    colorNekudot:     true,
+    fontEnabled:      true,
+    letterSpacing:    0,
+    focusMode:        false,
+    highlightMode:    'block',
+    highlightOpacity: 100,
   };
+
+  function hexToRgba(hex, opacity) {
+    const h = hex.replace('#', '');
+    const r = parseInt(h.substring(0, 2), 16);
+    const g = parseInt(h.substring(2, 4), 16);
+    const b = parseInt(h.substring(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${(opacity / 100).toFixed(2)})`;
+  }
 
   function rebuildActiveNikud() {
     ACTIVE_VOWEL_HIGHLIGHTS = {};
-    Object.entries(ALL_NIKUD).forEach(([char, meta]) => {
-      if (settings[meta.key] !== false) {
-        ACTIVE_VOWEL_HIGHLIGHTS[char] = meta.color;
-      }
+    Object.entries(ALL_NIKUD).forEach(([key, meta]) => {
+      if (settings[meta.key] !== false) ACTIVE_VOWEL_HIGHLIGHTS[key] = meta.color;
     });
-    // Hataf vowels mirror their base nikud's active state and color
     Object.entries(HATAF_MAP).forEach(([hataf, base]) => {
       if (ACTIVE_VOWEL_HIGHLIGHTS[base] !== undefined) {
         ACTIVE_VOWEL_HIGHLIGHTS[hataf] = ACTIVE_VOWEL_HIGHLIGHTS[base];
       }
     });
-    NIKUD_SET = new Set(Object.keys(ACTIVE_VOWEL_HIGHLIGHTS));
+    NIKUD_SET = new Set(
+      Object.keys(ACTIVE_VOWEL_HIGHLIGHTS).filter(k => k.length === 1)
+    );
+    if (settings['nikud_shva_na'] !== false || settings['nikud_shva_nach'] !== false) {
+      NIKUD_SET.add(SHVA_CHAR);
+    }
   }
 
- // ---------------------------------------------------------------------------
   // 4. STYLE INJECTION
-  // Writes (or rewrites) a single <style> tag with all visual rules.
-  // ---------------------------------------------------------------------------
   function applyVisualSettings() {
     let styleEl = document.getElementById('otiyot-plus-style');
     if (!styleEl) {
@@ -97,71 +111,103 @@
       }
     `;
 
-    const fontRule = settings.fontEnabled
-      ? `* { font-family: 'DyslexiaHebrew', David, 'Times New Roman', serif !important; }`
-      : '';
-
-    const spacingRule = settings.letterSpacing > 0
-      ? `body, body * { letter-spacing: ${settings.letterSpacing}px !important; }`
-      : '';
-
-    const spanStyle = `
+    // MERGED: Added padding + border-radius from GitHub version
+    const hebrewRule = `
       .otiyot-letter-block {
-        padding: 0 1px;
-        border-radius: 3px;
         display: inline;
         line-height: inherit;
+        padding: 0 1px;
+        border-radius: 3px;
+        ${settings.fontEnabled ? "font-family: 'DyslexiaHebrew', sans-serif !important;" : ""}
+        ${settings.letterSpacing > 0
+          ? `display: inline-block !important; vertical-align: baseline !important;
+             margin-inline-end: ${settings.letterSpacing}px !important; letter-spacing: 0 !important;`
+          : ''}
       }
+      .otiyot-nikud-char { /* reserved for future per-diacritic styling */ }
     `;
 
-    // Focus Mode Overlay CSS
-    // Using will-change: clip-path for high-performance scrolling
-// REPLACING SECTION 4 (Focus Mode Overlay CSS)
     const focusStyle = `
       #otiyot-focus-overlay {
-        position: fixed;
-        top: 0; left: 0;
-        width: 100vw; height: 100vh;
-        background: rgba(0, 0, 0, 0.35); 
-        backdrop-filter: blur(8px);      
-        -webkit-backdrop-filter: blur(8px);
-        pointer-events: none;            
-        z-index: 2147483647;            
-        transition: opacity 0.2s;
-        opacity: 0;                      
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+        background: rgba(0, 0, 0, 0.4); backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px); pointer-events: none;
+        z-index: 2147483647; transition: opacity 0.25s; opacity: 0;
         will-change: clip-path;
       }
-      #otiyot-focus-overlay.active {
-        opacity: 1;
-      }
-      /* PRIORITY SYSTEM: Makes browser selection transparent so Niqqud colors show */
-      .otiyot-letter-block::selection {
-        background: rgba(255, 255, 255, 0.2) !important;
-        color: inherit !important;
-      }
-      /* Fallback for selected text inside the span */
-      ::selection {
-        background: rgba(41, 171, 226, 0.2); 
-      }
+      #otiyot-focus-overlay.active { opacity: 1; }
+      .otiyot-letter-block::selection { background: rgba(41, 171, 226, 0.2) !important; color: inherit !important; }
     `;
 
-    styleEl.textContent = fontFace + fontRule + spacingRule + spanStyle + focusStyle;
-
-    styleEl.textContent = fontFace + fontRule + spacingRule + spanStyle + focusStyle;
+    styleEl.textContent = fontFace + hebrewRule + focusStyle;
   }
 
   // ---------------------------------------------------------------------------
-  // 5. TEXT NODE PROCESSOR
-  // Walks all text nodes, finds Hebrew letters with nikud, and wraps in spans.
+  // SHVA CLASSIFICATION
   // ---------------------------------------------------------------------------
+  const LONG_VOWEL_SET = new Set([
+    '\u05B5', // Tsere
+    '\u05B4', // Hiriq (long)
+    '\u05B9', // Holam
+    '\u05BB', // Kubutz / Shuruk
+    '\u05B8', // Kamatz Gadol
+  ]);
+
+  function classifyShva(text, letterPos, diacritics, prevDominantNikud, prevWasShva) {
+    let wordInitial = true;
+    for (let k = letterPos - 1; k >= 0; k--) {
+      const c = text.charCodeAt(k);
+      if (isHebrewLetter(c)) { wordInitial = false; break; }
+      if (c === 0x20 || c === 0x05BE || c === 0x2D) break;
+    }
+    if (wordInitial) return 'SHVA_NA';
+
+    const afterLen = letterPos + 1 + diacritics.length;
+    if (afterLen >= text.length) return 'SHVA_NACH';
+    const nextCode = text.charCodeAt(afterLen);
+    const isNextHebrew = isHebrewLetter(nextCode);
+    const isNextDiac   = (nextCode >= 0x0590 && nextCode <= 0x05CF);
+    if (!isNextHebrew && !isNextDiac) return 'SHVA_NACH';
+
+    if (prevDominantNikud && LONG_VOWEL_SET.has(prevDominantNikud)) return 'SHVA_NA';
+    if (diacritics.includes('\u05BC')) return 'SHVA_NA';
+    if (prevWasShva) return 'SHVA_NACH';
+
+    let ahead = afterLen;
+    while (ahead < text.length) {
+      const c = text.charCodeAt(ahead);
+      if (isHebrewLetter(c)) {
+        for (let k = ahead + 1; k < text.length; k++) {
+          const nc = text.charCodeAt(k);
+          if (nc === 0x05B0) return 'SHVA_NA';
+          if (isHebrewLetter(nc) || nc === 0x20) break;
+        }
+        break;
+      }
+      ahead++;
+    }
+    return 'SHVA_NACH';
+  }
+
+  function classifyVav(diacritics) {
+    if (diacritics.includes('\u05B9')) return 'HOLAM_VAV';
+    if (diacritics.includes('\u05BC') &&
+        !/[\u05B0-\u05BBd\u05BD]/.test(diacritics.replace('\u05BC', ''))) {
+      return 'SHURUK';
+    }
+    return null;
+  }
+
+  // 5. TEXT NODE PROCESSOR
   function processTextNodes(root) {
-    if (!settings.colorNekudot) return;
+    const active = settings.colorNekudot || settings.fontEnabled || settings.letterSpacing > 0;
+    if (!active) return;
 
     const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'TEXTAREA', 'INPUT', 'NOSCRIPT']);
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
     const targets = [];
     let node;
-    
+
     while ((node = walker.nextNode())) {
       const parent = node.parentElement;
       if (parent && !SKIP_TAGS.has(parent.tagName) && !parent.classList.contains('otiyot-letter-block')) {
@@ -176,84 +222,86 @@
 
       const fragment = document.createDocumentFragment();
       let i = 0;
+      let prevDominantNikud = null;
+      let prevWasShva       = false;
 
       while (i < text.length) {
-        const char = text[i];
+        const char     = text[i];
         const charCode = char.charCodeAt(0);
 
         if (isHebrewLetter(charCode)) {
-          let diacritics = '';   
-          let firstNikud = null; 
+          let diacritics = '';
+          let rawNikud   = null;
           let j = i + 1;
 
           while (j < text.length) {
-            const next = text[j];
+            const next     = text[j];
             const nextCode = next.charCodeAt(0);
-
             if (isLetterModifier(nextCode)) {
-              // Shin/Sin dot, Rafe, etc. — collect silently, never influence colour
-              diacritics += next;
-              j++;
+              diacritics += next; j++;
             } else if (NIKUD_SET.has(next)) {
-              // Real vowel (or Dagesh if enabled) — but Dagesh only wins if no
-              // real vowel has been seen yet AND it is not U+05BC beating an actual vowel
-              if (firstNikud === null) {
-                firstNikud = next;
-              } else if (next !== '\u05BC' && firstNikud === '\u05BC') {
-                // A real vowel found after we provisionally set Dagesh — upgrade
-                firstNikud = next;
+              if (rawNikud === null || (next !== '\u05BC' && rawNikud === '\u05BC')) {
+                rawNikud = next;
               }
-              diacritics += next;
-              j++;
-            } else if (ALL_NIKUD_SET.has(next)) {
-              diacritics += next;
-              j++;
-            } else if (isCantillation(nextCode)) {
-              diacritics += next;
-              j++;
-            } else { break; }
+              diacritics += next; j++;
+            } else if (ALL_NIKUD_SET.has(next) || isCantillation(nextCode)) {
+              diacritics += next; j++;
+            } else {
+              break;
+            }
           }
 
-          // Special case: Vav (ו) + Dagesh = Shuruk (וּ), an "oo" vowel identical
-          // in sound to Kubutz. Remap its colour to Kubutz so it highlights consistently.
-          if (char === '\u05D5' && firstNikud === '\u05BC' && !diacritics.replace('\u05BC', '').match(/[\u05B0-\u05BD\u05B1-\u05B3]/)) {
-            firstNikud = '\u05BB'; // Kubutz
+          let colourKey = rawNikud;
+
+          if (char === '\u05D5') {
+            const vavRole = classifyVav(diacritics);
+            if (vavRole === 'HOLAM_VAV') colourKey = '\u05B9';
+            else if (vavRole === 'SHURUK') colourKey = '\u05BB';
           }
 
-          if (firstNikud !== null) {
-            const span = document.createElement('span');
-            span.className = 'otiyot-letter-block';
-            span.style.backgroundColor = ACTIVE_VOWEL_HIGHLIGHTS[firstNikud];
-            span.textContent = char + diacritics;
-            fragment.appendChild(span);
-            i = j;
-            continue;
-          } else if (diacritics.length > 0) {
-            fragment.appendChild(document.createTextNode(char + diacritics));
-            i = j;
-            continue;
+          if (rawNikud === SHVA_CHAR || diacritics.includes(SHVA_CHAR)) {
+            const shvaKey = classifyShva(text, i, diacritics, prevDominantNikud, prevWasShva);
+            if (rawNikud === SHVA_CHAR) colourKey = shvaKey;
+            prevWasShva = true;
+          } else {
+            prevWasShva = false;
           }
+          prevDominantNikud = rawNikud;
+
+          const outerSpan = document.createElement('span');
+          outerSpan.className = 'otiyot-letter-block';
+          const color = colourKey ? ACTIVE_VOWEL_HIGHLIGHTS[colourKey] : null;
+
+          if (settings.colorNekudot && color) {
+            if (settings.highlightMode === 'nikud') {
+              outerSpan.style.color = hexToRgba(color, settings.highlightOpacity);
+            } else {
+              outerSpan.style.backgroundColor = hexToRgba(color, settings.highlightOpacity);
+            }
+          }
+          outerSpan.textContent = char + diacritics;
+          fragment.appendChild(outerSpan);
+          i = j;
+
+        } else {
+          if (char === ' ' || charCode === 0x05BE) {
+            prevDominantNikud = null;
+            prevWasShva       = false;
+          }
+          fragment.appendChild(document.createTextNode(char));
+          i++;
         }
-        fragment.appendChild(document.createTextNode(char));
-        i++;
       }
       textNode.parentNode.replaceChild(fragment, textNode);
     });
   }
 
-  // ---------------------------------------------------------------------------
-  // 6. MUTATION OBSERVER (For Dynamic Content / Sefaria)
-  // ---------------------------------------------------------------------------
+  // 6. OBSERVERS & FOCUS MODE
   let debounceTimer = null;
   let pendingNodes  = [];
 
   const observer = new MutationObserver((mutations) => {
-    mutations.forEach(m => {
-      m.addedNodes.forEach(n => {
-        if (n.nodeType === Node.ELEMENT_NODE) pendingNodes.push(n);
-      });
-    });
-
+    mutations.forEach(m => m.addedNodes.forEach(n => { if (n.nodeType === Node.ELEMENT_NODE) pendingNodes.push(n); }));
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       if (pendingNodes.length === 0) return;
@@ -264,71 +312,95 @@
     }, 200);
   });
 
-  // ---------------------------------------------------------------------------
-  // 6.5 ENHANCED READING FOCUS MODE LOGIC
-  // Handles the spotlight effect. Supports scrolling and Niqqud-spans.
-  // ---------------------------------------------------------------------------
-// REPLACING SECTION 6.5 (initFocusMode)
+  let _focusHandler = null;
+
+  function teardownFocusMode() {
+    if (_focusHandler) {
+      document.removeEventListener('selectionchange', _focusHandler);
+      document.removeEventListener('scroll',          _focusHandler, { capture: true });
+      window.removeEventListener(  'resize',          _focusHandler);
+      _focusHandler = null;
+    }
+    const ov  = document.getElementById('otiyot-focus-overlay');
+    const svg = document.getElementById('otiyot-clip-svg');
+    if (ov)  ov.remove();
+    if (svg) svg.remove();
+  }
+
   function initFocusMode() {
+    teardownFocusMode();
     if (!settings.focusMode) return;
 
-    let overlay = document.getElementById('otiyot-focus-overlay');
-    if (!overlay) {
-      overlay = document.createElement('div');
-      overlay.id = 'otiyot-focus-overlay';
-      document.body.appendChild(overlay);
-    }
+    const overlay = document.createElement('div');
+    overlay.id = 'otiyot-focus-overlay';
+    document.body.appendChild(overlay);
 
-    let rafId = null;
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const clipSvg = document.createElementNS(svgNS, 'svg');
+    clipSvg.setAttribute('id', 'otiyot-clip-svg');
+    clipSvg.setAttribute('style', 'position:fixed;top:0;left:0;width:0;height:0;overflow:visible;pointer-events:none;z-index:2147483646');
+    const clipPathEl = document.createElementNS(svgNS, 'clipPath');
+    clipPathEl.setAttribute('id', 'otiyot-focus-clip');
+    clipPathEl.setAttribute('clipPathUnits', 'userSpaceOnUse');
+    clipSvg.appendChild(clipPathEl);
+    document.body.appendChild(clipSvg);
 
     const updateFocus = () => {
-      const selection = window.getSelection();
-      
-      if (selection.rangeCount > 0 && selection.toString().trim().length > 0) {
-        const range = selection.getRangeAt(0);
-        const bounds = range.getBoundingClientRect();
-        
-        // Hide if the text moves entirely off-screen
-        if (bounds.bottom < 0 || bounds.top > window.innerHeight) {
-          overlay.classList.remove('active');
-          return;
-        }
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0 && sel.toString().trim().length > 0) {
+        const range = sel.getRangeAt(0);
+        const W = window.innerWidth, H = window.innerHeight, PAD = 6;
 
-        const p = 8; // Padding for Vowels
-        const top = bounds.top - p;
-        const left = bounds.left - p;
-        const bottom = bounds.bottom + p;
-        const right = bounds.right + p;
+        const rawRects = Array.from(range.getClientRects()).filter(r =>
+          r.width > 0 && r.height > 0 && r.bottom >= 0 && r.top <= H
+        );
 
-        overlay.style.clipPath = `polygon(
-          0% 0%, 0% 100%, 100% 100%, 100% 0%, 0% 0%, 
-          ${left}px ${top}px, 
-          ${right}px ${top}px, 
-          ${right}px ${bottom}px, 
-          ${left}px ${bottom}px, 
-          ${left}px ${top}px
-        )`;
-        
+        if (rawRects.length === 0) { overlay.classList.remove('active'); return; }
+
+        const lines = [];
+        rawRects.forEach(r => {
+          let merged = false;
+          for (const line of lines) {
+            const overlap = Math.min(r.bottom, line.bottom) + 4 > Math.max(r.top, line.top);
+            if (overlap) {
+              line.left   = Math.min(line.left, r.left);
+              line.right  = Math.max(line.right, r.right);
+              line.top    = Math.min(line.top, r.top);
+              line.bottom = Math.max(line.bottom, r.bottom);
+              merged = true;
+              break;
+            }
+          }
+          if (!merged) lines.push({ left: r.left, right: r.right, top: r.top, bottom: r.bottom });
+        });
+
+        let d = `M0,0 L0,${H} L${W},${H} L${W},0 Z `;
+        lines.forEach(l => {
+          const x1 = Math.max(0, l.left - PAD), y1 = Math.max(0, l.top - PAD);
+          const x2 = Math.min(W, l.right + PAD), y2 = Math.min(H, l.bottom + PAD);
+          d += `M${x1},${y1} L${x2},${y1} L${x2},${y2} L${x1},${y2} Z `;
+        });
+
+        while (clipPathEl.firstChild) clipPathEl.removeChild(clipPathEl.firstChild);
+        const pathEl = document.createElementNS(svgNS, 'path');
+        pathEl.setAttribute('d', d.trim());
+        pathEl.setAttribute('fill-rule', 'evenodd');
+        clipPathEl.appendChild(pathEl);
+
+        overlay.style.clipPath = 'url(#otiyot-focus-clip)';
         overlay.classList.add('active');
       } else {
         overlay.classList.remove('active');
       }
     };
 
-    // Optimization: requestAnimationFrame makes the movement smooth
-    const onScroll = () => {
-      if (rafId) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(updateFocus);
-    };
-
-    // 'true' at the end ensures we catch scrolls on sub-elements/divs
-    document.addEventListener('scroll', onScroll, { passive: true, capture: true });
+    _focusHandler = updateFocus;
     document.addEventListener('selectionchange', updateFocus);
-    window.addEventListener('resize', updateFocus);
+    document.addEventListener('scroll',          updateFocus, { passive: true, capture: true });
+    window.addEventListener(  'resize',          updateFocus);
   }
-  // ---------------------------------------------------------------------------
-  // 7. INITIALISATION
-  // ---------------------------------------------------------------------------
+
+  // 7. INITIALISATION & LIVE UPDATES
   const nikudDefaults = {};
   Object.values(ALL_NIKUD).forEach(({ key }) => { nikudDefaults[key] = true; });
 
@@ -337,16 +409,31 @@
     rebuildActiveNikud();
     applyVisualSettings();
     processTextNodes(document.body);
-    
-    // Initialize focus mode
-    initFocusMode(); 
-    
+    initFocusMode();
     observer.observe(document.body, { childList: true, subtree: true });
   });
 
-  // Reload the page on settings change to ensure a clean state
-  chrome.storage.onChanged.addListener(() => {
-    location.reload();
-  });
+  function stripOtiyotSpans() {
+    document.querySelectorAll('.otiyot-letter-block').forEach(span => {
+      const parent = span.parentNode;
+      if (parent) parent.replaceChild(document.createTextNode(span.textContent), span);
+    });
+    document.normalize();
+  }
 
+  function applyAll() {
+    rebuildActiveNikud();
+    applyVisualSettings();
+    observer.disconnect();
+    stripOtiyotSpans();
+    processTextNodes(document.body);
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.type !== 'OTIYOT_SETTINGS') return;
+    Object.assign(settings, msg.settings);
+    applyAll();
+    initFocusMode();
+  });
 })();

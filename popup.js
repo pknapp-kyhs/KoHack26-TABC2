@@ -27,7 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // ---------------------------------------------------------------------------
   const colorToggle = document.getElementById('colorToggle');
   const fontToggle  = document.getElementById('fontToggle');
-  const focusToggle = document.getElementById('focusToggle'); // NEW: Focus Mode toggle
+  const focusToggle = document.getElementById('focusToggle');
   const spaceRange  = document.getElementById('spaceRange');
   const spaceVal    = document.getElementById('spaceVal');
   const nikudPanel  = document.getElementById('nikudPanel');
@@ -121,13 +121,13 @@ document.addEventListener('DOMContentLoaded', () => {
   chrome.storage.sync.get({
     colorNekudot:  true,
     fontEnabled:   true,
-    focusMode:     false, // NEW: Default for Focus Mode is off
+    focusMode:     false,
     letterSpacing: 0,
     ...nikudDefaults,
   }, (res) => {
     colorToggle.checked   = res.colorNekudot;
     fontToggle.checked    = res.fontEnabled;
-    focusToggle.checked   = res.focusMode; // NEW: Set the focus toggle state
+    focusToggle.checked   = res.focusMode;
     spaceRange.value      = res.letterSpacing;
     spaceVal.textContent  = res.letterSpacing + 'px';
 
@@ -143,7 +143,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const toSave = {
       colorNekudot:  colorToggle.checked,
       fontEnabled:   fontToggle.checked,
-      focusMode:     focusToggle.checked, // NEW: Save the Focus Mode state
+      focusMode:     focusToggle.checked,
       letterSpacing: parseInt(spaceRange.value, 10),
     };
     NIKUD_LIST.forEach(({ key }) => {
@@ -155,7 +155,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Event Listeners for main toggles
   colorToggle.addEventListener('change', saveAll);
   fontToggle.addEventListener('change', saveAll);
-  focusToggle.addEventListener('change', saveAll); // NEW: Save when focus mode toggles
+  focusToggle.addEventListener('change', saveAll);
 
   // Event Listener for the range slider
   spaceRange.addEventListener('input', () => {

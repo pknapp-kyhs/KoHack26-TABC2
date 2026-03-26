@@ -1,0 +1,47 @@
+name: Stable Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Triggered by tags like v1.2.0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"          # e.g. v1.2.0
+          VERSION="${TAG#v}"                # strip leading 'v' → 1.2.0
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Patch manifest.json version
+        run: |
+          jq --arg v "${{ steps.version.outputs.version }}" '.version = $v' manifest.json > manifest.tmp.json
+          mv manifest.tmp.json manifest.json
+
+      - name: Package extension
+        run: |
+          zip -r "otiyot-plus-${{ steps.version.outputs.version }}.zip" \
+            manifest.json \
+            content.js \
+            popup.js \
+            popup.html \
+            dyslexia-hebrew-extended.otf \
+            icons/
+
+      - name: Create stable release
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "Otiyot+ ${{ steps.version.outputs.tag }}" \
+            --generate-notes \
+            "otiyot-plus-${{ steps.version.outputs.version }}.zip"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

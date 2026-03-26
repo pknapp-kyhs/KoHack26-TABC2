@@ -1,29 +1,35 @@
-How to install Otiyot+
-📁 1. Prepare the Files
-- Download: Make sure all 6 project files are downloaded.
-- Organize: Place them together in a single folder on your computer
-(for example: Otyiot-Extension).
+# Otiyot+
 
-🌐 2. Load the Extension into Chrome
-- Open Google Chrome.
-- In the address bar, paste this and press Enter:
-chrome://extensions/
-- (Chrome blocks clickable links to internal pages, so users must paste this manually.)
-- In the top right, toggle Developer mode to ON.
-- Click Load unpacked in the top left.
-- Select the folder where you saved the project files.
+A Chrome extension that makes Hebrew text easier to read for people with dyslexia.
 
-📌 3. Pin for Easy Access
-- Click the Extensions icon (gray puzzle piece 🧩) in the Chrome toolbar.
-- Find Otyiot+ in the list.
-- Click the Pin icon (📌) to keep it visible at all times.
+**Features:**
+- Color-codes each Hebrew letter by its vowel mark (nikud)
+- Swaps page fonts to a dyslexia-friendly Hebrew typeface
+- Adjustable letter spacing
+- Reading focus mode — blurs everything except selected text
 
-🧪 How to Test
-Once installed, you can test the extension using the steps below:
-- Visit the test page: Sefaria – Judges 16:30
-- Open the extension popup.
-- Adjust your settings to see how the page responds.
-⚠️ Important:
-After changing any toggle, you must refresh the page for the update to take effect.
+---
 
+## Installation
 
+**1. Get the files**
+
+Download or clone this repository so all files are in a single folder.
+
+**2. Load into Chrome**
+
+1. Open Chrome and go to `chrome://extensions/`
+2. Enable **Developer mode** (top right)
+3. Click **Load unpacked** and select the folder
+
+**3. Pin the extension**
+
+Click the Extensions icon (puzzle piece) in the toolbar, find Otiyot+, and click the pin icon.
+
+---
+
+## Testing
+
+Visit [Sefaria – Judges 16:30](https://www.sefaria.org/Judges.16.30) to see the extension on a Hebrew text page.
+
+Open the popup and adjust settings. Changes take effect on the next page load.

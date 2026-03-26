@@ -1,0 +1,53 @@
+name: Nightly Beta
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Every night at midnight UTC
+  workflow_dispatch:      # Allow manual trigger
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set nightly version
+        id: version
+        run: |
+          BASE=$(jq -r '.version' manifest.json)
+          DATE=$(date -u +%Y%m%d)
+          NIGHTLY_VERSION="${BASE}-nightly.${DATE}"
+          echo "version=${NIGHTLY_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Patch manifest.json version
+        run: |
+          jq --arg v "${{ steps.version.outputs.version }}" '.version = $v' manifest.json > manifest.tmp.json
+          mv manifest.tmp.json manifest.json
+
+      - name: Package extension
+        run: |
+          zip -r otiyot-plus-nightly.zip \
+            manifest.json \
+            content.js \
+            popup.js \
+            popup.html \
+            dyslexia-hebrew-extended.otf \
+            icons/
+
+      - name: Delete previous nightly release
+        run: gh release delete nightly --yes --cleanup-tag || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create nightly pre-release
+        run: |
+          gh release create nightly \
+            --title "Nightly Beta (${{ steps.version.outputs.version }})" \
+            --notes "Automated nightly build from the latest \`main\` branch. Not guaranteed to be stable." \
+            --prerelease \
+            otiyot-plus-nightly.zip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
